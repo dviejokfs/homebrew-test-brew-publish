@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: datetime-cli
+            asset_name: datetime-cli-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: datetime-cli
+            asset_name: datetime-cli-aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: datetime-cli
+            asset_name: datetime-cli-x86_64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.tar.gz
+            target/${{ matrix.target }}/release/${{ matrix.asset_name }}.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew-tap:
+    name: Update Homebrew Tap
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Download artifacts
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          REPO="${{ github.repository }}"
+
+          # Download and compute SHA256 for macOS Intel
+          curl -L -o datetime-cli-x86_64-apple-darwin.tar.gz \
+            "https://github.com/${REPO}/releases/download/v${VERSION}/datetime-cli-x86_64-apple-darwin.tar.gz"
+          SHA256_INTEL=$(shasum -a 256 datetime-cli-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)
+
+          # Download and compute SHA256 for macOS ARM
+          curl -L -o datetime-cli-aarch64-apple-darwin.tar.gz \
+            "https://github.com/${REPO}/releases/download/v${VERSION}/datetime-cli-aarch64-apple-darwin.tar.gz"
+          SHA256_ARM=$(shasum -a 256 datetime-cli-aarch64-apple-darwin.tar.gz | cut -d ' ' -f 1)
+
+          echo "SHA256_INTEL=${SHA256_INTEL}" >> $GITHUB_ENV
+          echo "SHA256_ARM=${SHA256_ARM}" >> $GITHUB_ENV
+
+      - name: Update Homebrew Formula
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          REPO="${{ github.repository }}"
+
+          cat > Formula/datetime-cli.rb << 'EOF'
+          class DatetimeCli < Formula
+            desc "A simple CLI tool to print the current date and time"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION}"
+
+            if Hardware::CPU.intel?
+              url "https://github.com/${REPO}/releases/download/v${VERSION}/datetime-cli-x86_64-apple-darwin.tar.gz"
+              sha256 "${SHA256_INTEL}"
+            else
+              url "https://github.com/${REPO}/releases/download/v${VERSION}/datetime-cli-aarch64-apple-darwin.tar.gz"
+              sha256 "${SHA256_ARM}"
+            end
+
+            def install
+              bin.install "datetime-cli"
+            end
+
+            test do
+              system "#{bin}/datetime-cli"
+            end
+          end
+          EOF
+
+          # Replace placeholders
+          sed -i "s|\${REPO}|${REPO}|g" Formula/datetime-cli.rb
+          sed -i "s|\${VERSION}|${VERSION}|g" Formula/datetime-cli.rb
+          sed -i "s|\${SHA256_INTEL}|${SHA256_INTEL}|g" Formula/datetime-cli.rb
+          sed -i "s|\${SHA256_ARM}|${SHA256_ARM}|g" Formula/datetime-cli.rb
+
+      - name: Commit and Push to Tap
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/datetime-cli.rb
+          git commit -m "Update datetime-cli to version ${{ steps.get_version.outputs.VERSION }}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
