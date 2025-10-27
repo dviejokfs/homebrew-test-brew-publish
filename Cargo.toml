@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A simple CLI tool to print the current date and time"
 license = "MIT"
-repository = "https://github.com/yourusername/datetime-cli"
+repository = "https://github.com/dviejokfs/homebrew-test-brew-publish"
 
 [dependencies]
 chrono = "0.4"
